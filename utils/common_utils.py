@@ -154,6 +154,37 @@ def get_noise(input_depth, method, spatial_size, noise_type='u', var=1./10):
         
     return net_input
 
+def get_noise2(input_depth, method, spatial_size, noise_type='u', var=1./10):
+    """Returns a pytorch.Tensor of size (1 x `input_depth` x `spatial_size[0]` x `spatial_size[1]`)
+    initialized in a specific way.
+    Args:
+        input_depth: number of channels in the tensor
+        method: `noise` for fillting tensor with noise; `meshgrid` for np.meshgrid
+        spatial_size: spatial size of the tensor to initialize
+        noise_type: 'u' for uniform; 'n' for normal
+        var: a factor, a noise will be multiplicated by. Basically it is standard deviation scaler.
+    """
+    if isinstance(spatial_size, int):
+        spatial_size = (spatial_size, spatial_size)
+    if method == 'noise':
+        shape = [1, input_depth, spatial_size[0], spatial_size[1]]
+        net_input = torch.zeros(shape)
+
+        fill_noise(net_input, noise_type)
+        net_input *= var
+        #net_input += .7 #WARNING ADDED FOR MELANOMA
+        print('using get_noise2')
+    elif method == 'meshgrid':
+        assert input_depth == 2
+        X, Y = np.meshgrid(np.arange(0, spatial_size[1])/float(spatial_size[1]-1), np.arange(0, spatial_size[0])/float(spatial_size[0]-1))
+        meshgrid = np.concatenate([X[None,:], Y[None,:]])
+        net_input=  np_to_torch(meshgrid)
+    else:
+        assert False
+
+    return net_input
+
+
 def pil_to_np(img_PIL):
     '''Converts image in PIL format to np.array.
     
@@ -570,6 +601,83 @@ def optimize_v18(optimizer_type, parameters, closure, LR, num_iter, show_every, 
             if iterations_without_improvement == 500:
                 print(f'training stopped at it {j} after 500 iterations without improvement')
                 break
+    else:
+        assert False
+    return total_loss, images_generated, j_best, restart
+
+
+def optimize_melanoma_v1(optimizer_type, parameters, closure, LR, num_iter, show_every, path_img_dest, restart = True, annealing=False, lr_finder_flag=False):
+    """
+    It comes from optimize_v18 we changed the stop training criterion from 0.0005
+    # We stop training when loss reaches 0.0005. We saw some examples that looked ok
+
+    Runs optimization loop.
+
+    Args:
+        optimizer_type: 'LBFGS' of 'adam'
+        parameters: list of Tensors to optimize over
+        closure: function, that returns loss variable
+        LR: learning rate
+        num_iter: number of iterations
+    """
+    total_loss = []
+    images_generated = []
+    if optimizer_type == 'adam':
+        #print('Starting optimization with ADAM')
+        optimizer = torch.optim.Adam(parameters, lr=LR)
+
+        lr_finder = 1e-7
+        lrs_finder = []
+        for j in range(num_iter):
+
+            # LR finder
+            if lr_finder_flag:
+                if j == 0: print('Finding LR')
+                lr_finder = lr_finder * 1.2
+                if lr_finder >= 1e-2: #completed
+                    return total_loss, images_generated, j_best,
+                lrs_finder.append(lr_finder)
+                optimizer = torch.optim.Adam(parameters, lr=lr_finder)
+
+            # Init values for best loss selection
+            if j == 0:
+                loss_best = 1000
+                j_best = 0
+
+            optimizer.zero_grad()
+            total_loss_temp, image_generated_temp = closure()
+            total_loss.append(total_loss_temp)
+
+            # Restart if bad initialization
+            if j == 200 and np.sum(np.diff(total_loss)==0) > 50:
+                """if the network is not learning (bad initialization) Restart"""
+                restart = True
+                return total_loss, images_generated, j_best, restart
+            else:
+                restart = False
+
+            # if total_loss_temp < 0.001:
+                # print('loss reached 0.001')
+                # break # v18
+
+            if total_loss_temp < loss_best:
+                loss_best = total_loss_temp
+                iterations_without_improvement = 0
+                j_best = j
+
+            if j % 10 == 0: #150 # the first 1500 iterations are blurry
+                images_generated.append(image_generated_temp)
+                #plot_for_gif(image_generated_temp, num_iter, j, path_img_dest)
+
+            if annealing == True and iterations_without_improvement == 50: # it was 200
+                LR = adjust_learning_rate(optimizer, j, LR)
+                print(f'LR reduced to: {LR:.5f}')
+            #print(f'total_loss_temp:{total_loss_temp}')
+            optimizer.step()
+            iterations_without_improvement += 1
+            # if iterations_without_improvement == 500:
+                # print(f'training stopped at it {j} after 500 iterations without improvement')
+                # break
     else:
         assert False
     return total_loss, images_generated, j_best, restart
